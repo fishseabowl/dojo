@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Context, Result};
 use clap::{Args, Subcommand};
-use dojo_lang::compiler::MANIFESTS_DIR;
+use dojo_world::manifest::MANIFESTS_DIR;
 use dojo_world::metadata::{dojo_metadata_from_workspace, Environment};
 use dojo_world::migration::TxnConfig;
 use katana_rpc_api::starknet::RPC_SPEC_VERSION;
@@ -50,6 +50,8 @@ pub enum MigrateCommand {
         #[command(flatten)]
         transaction: TransactionOptions,
     },
+    #[command(about = "Generate overlays file.")]
+    GenerateOverlays,
 }
 
 impl MigrateArgs {
@@ -57,8 +59,24 @@ impl MigrateArgs {
         trace!(args = ?self);
         let ws = scarb::ops::read_workspace(config.manifest_path(), config)?;
 
+        let dojo_metadata = if let Some(metadata) = dojo_metadata_from_workspace(&ws) {
+            metadata
+        } else {
+            return Err(anyhow!(
+                "No current package with dojo metadata found, migrate is not yet support for \
+                 workspaces."
+            ));
+        };
+
+        // This variant is tested before the match on `self.command` to avoid
+        // having the need to spin up a Katana to generate the files.
+        if let MigrateCommand::GenerateOverlays = self.command {
+            trace!("Generating overlays.");
+            return migration::generate_overlays(&ws);
+        }
+
         let env_metadata = if config.manifest_path().exists() {
-            dojo_metadata_from_workspace(&ws).env().cloned()
+            dojo_metadata.env().cloned()
         } else {
             trace!("Manifest path does not exist.");
             None
@@ -72,7 +90,7 @@ impl MigrateArgs {
         let MigrateArgs { name, world, starknet, account, .. } = self;
 
         let name = name.unwrap_or_else(|| {
-            ws.root_package().expect("Root package to be present").id.name.to_string()
+            ws.current_package().expect("Root package to be present").id.name.to_string()
         });
 
         let (world_address, account, rpc_url) = config.tokio_handle().block_on(async {
@@ -81,6 +99,7 @@ impl MigrateArgs {
 
         match self.command {
             MigrateCommand::Plan => config.tokio_handle().block_on(async {
+                trace!(name, "Planning migration.");
                 migration::migrate(
                     &ws,
                     world_address,
@@ -89,6 +108,7 @@ impl MigrateArgs {
                     &name,
                     true,
                     TxnConfig::default(),
+                    dojo_metadata.skip_migration,
                 )
                 .await
             }),
@@ -96,9 +116,19 @@ impl MigrateArgs {
                 trace!(name, "Applying migration.");
                 let txn_config: TxnConfig = transaction.into();
 
-                migration::migrate(&ws, world_address, rpc_url, account, &name, false, txn_config)
-                    .await
+                migration::migrate(
+                    &ws,
+                    world_address,
+                    rpc_url,
+                    account,
+                    &name,
+                    false,
+                    txn_config,
+                    dojo_metadata.skip_migration,
+                )
+                .await
             }),
+            _ => unreachable!("other case handled above."),
         }
     }
 }
@@ -190,8 +220,8 @@ fn is_compatible_version(provided_version: &str, expected_version: &str) -> Resu
         .map_err(|e| anyhow!("Failed to parse expected version '{}': {}", expected_version, e))?;
 
     // Specific backward compatibility rule: 0.6 is compatible with 0.7.
-    if (provided_ver.major == 0 && provided_ver.minor == 6)
-        && (expected_ver.major == 0 && expected_ver.minor == 7)
+    if (provided_ver.major == 0 && provided_ver.minor == 7)
+        && (expected_ver.major == 0 && expected_ver.minor == 6)
     {
         return Ok(true);
     }
@@ -224,7 +254,9 @@ mod tests {
 
     #[test]
     fn test_is_compatible_version_specific_backward_compatibility() {
-        assert!(is_compatible_version("0.6.0", "0.7.1").unwrap());
+        let node_version = "0.7.1";
+        let katana_version = "0.6.0";
+        assert!(is_compatible_version(node_version, katana_version).unwrap());
     }
 
     #[test]

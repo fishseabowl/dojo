@@ -196,16 +196,11 @@ impl Ty {
                 let arr_len: u32 =
                     felts.remove(0).try_into().map_err(PrimitiveError::ValueOutOfRange)?;
 
-                if arr_len > 0 {
-                    let item_ty = items_ty[0].clone();
-
-                    items_ty.clear();
-
-                    for _ in 0..arr_len {
-                        let mut cur_item_ty = item_ty.clone();
-                        cur_item_ty.deserialize(felts)?;
-                        items_ty.push(cur_item_ty);
-                    }
+                let item_ty = items_ty.pop().unwrap();
+                for _ in 0..arr_len {
+                    let mut cur_item_ty = item_ty.clone();
+                    cur_item_ty.deserialize(felts)?;
+                    items_ty.push(cur_item_ty);
                 }
             }
             Ty::ByteArray(bytes) => {
@@ -250,7 +245,6 @@ impl std::fmt::Display for Ty {
         let str = self
             .iter()
             .filter_map(|ty| match ty {
-                Ty::Primitive(_) => None,
                 Ty::Struct(s) => {
                     let mut struct_str = format!("struct {} {{\n", s.name);
                     for member in &s.children {
@@ -272,6 +266,7 @@ impl std::fmt::Display for Ty {
                 }
                 Ty::Array(items_ty) => Some(format!("Array<{}>", items_ty[0].name())),
                 Ty::ByteArray(_) => Some("ByteArray".to_string()),
+                _ => None,
             })
             .collect::<Vec<_>>()
             .join("\n\n");

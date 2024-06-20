@@ -64,8 +64,6 @@ socials.x = "https://x.com/dojostarknet"
     assert_eq!(world.socials.unwrap().get("x"), Some(&"https://x.com/dojostarknet".to_string()));
 }
 
-// TODO: remove ignore once IPFS node is running.
-#[ignore]
 #[tokio::test]
 async fn world_metadata_hash_and_upload() {
     let meta = WorldMetadata {
@@ -123,7 +121,8 @@ async fn get_full_dojo_metadata_from_workspace() {
     let sources_dir = target_dir.join(profile.as_str()).join(SOURCES_DIR);
     let abis_dir = manifest_dir.join(ABIS_DIR).join(BASE_DIR);
 
-    let dojo_metadata = dojo_metadata_from_workspace(&ws);
+    let dojo_metadata =
+        dojo_metadata_from_workspace(&ws).expect("No current package with dojo metadata found.");
 
     // env
     assert!(dojo_metadata.env.is_some());
@@ -145,10 +144,9 @@ async fn get_full_dojo_metadata_from_workspace() {
     );
 
     assert!(env.world_address.is_some());
-    assert!(
-        env.world_address
-            .unwrap()
-            .eq("0x1c958955aedbc7b8e2f051767d3369168e88bc5074b0f39e5f8cd2539138281")
+    assert_eq!(
+        env.world_address.unwrap(),
+        "0x07efebb0c2d4cc285d48a97a7174def3be7fdd6b7bd29cca758fa2e17e03ef30"
     );
 
     assert!(env.keystore_path.is_none());
@@ -175,14 +173,21 @@ async fn get_full_dojo_metadata_from_workspace() {
 
     let artifacts = get_artifacts_from_manifest(&manifest_dir);
 
+    dbg!(&artifacts);
     for (abi_subdir, name) in artifacts {
-        let artifact = dojo_metadata.artifacts.get(&name);
-        assert!(artifact.is_some(), "bad artifact for {}", name);
-        let artifact = artifact.unwrap();
+        let resource = dojo_metadata.resources_artifacts.get(&name);
+        dbg!(&dojo_metadata.resources_artifacts);
+        assert!(resource.is_some(), "bad resource metadata for {}", name);
+        let resource = resource.unwrap();
 
         let sanitized_name = name.replace("::", "_");
 
-        check_artifact(artifact.clone(), sanitized_name, &abis_dir.join(abi_subdir), &sources_dir);
+        check_artifact(
+            resource.artifacts.clone(),
+            sanitized_name,
+            &abis_dir.join(abi_subdir),
+            &sources_dir,
+        );
     }
 }
 
@@ -224,6 +229,12 @@ fn get_artifacts_from_manifest(manifest_dir: &Utf8PathBuf) -> Vec<(String, Strin
         // Some models are inside actions, we need a better way to gather those.
         let name = name.replace("_actions_", "::actions::");
         let name = name.replace("::actions_", "::actions::");
+
+        let name = name.replace("_others_", "::others::");
+        let name = name.replace("::others_", "::others::");
+
+        let name = name.replace("_mock_token_", "::mock_token::");
+        let name = name.replace("::mock_token_", "::mock_token::");
         artifacts.push(("models".to_string(), name));
     }
 
@@ -231,6 +242,8 @@ fn get_artifacts_from_manifest(manifest_dir: &Utf8PathBuf) -> Vec<(String, Strin
     for entry in fs::read_dir(contracts_dir).unwrap().flatten() {
         let name = entry.path().file_stem().unwrap().to_string_lossy().to_string();
         let name = name.replace("_actions_", "::actions::");
+        let name = name.replace("_others_", "::others::");
+        let name = name.replace("_mock_token_", "::mock_token::");
         artifacts.push(("contracts".to_string(), name));
     }
 

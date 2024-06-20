@@ -19,7 +19,7 @@ async-trait.workspace = true
 cairo-proof-parser.workspace = true
 cairo-vm.workspace = true
 convert_case.workspace = true
-dojo-world = { workspace = true, features = [ "contracts", "metadata", "migration" ] }
+dojo-world = { workspace = true, features = [ "contracts", "manifest", "metadata", "migration" ] }
 flate2.workspace = true
 futures.workspace = true
 itertools.workspace = true
@@ -45,3 +45,6 @@ celestia-types = "0.1.1"
 
 cairo-felt = "0.9.1"
 num-bigint = "0.4.4"
+num-traits = "0.2.18"
+
+prover-sdk = { git = "https://github.com/cartridge-gg/http-prover", rev = "7d00b05" }

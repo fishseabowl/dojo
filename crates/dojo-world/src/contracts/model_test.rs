@@ -9,6 +9,7 @@ use starknet::macros::felt;
 use crate::contracts::model::ModelReader;
 use crate::contracts::world::test::deploy_world;
 use crate::contracts::world::WorldContractReader;
+use crate::metadata::dojo_metadata_from_workspace;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_model() {
@@ -24,7 +25,13 @@ async fn test_model() {
     let manifest_dir = config.manifest_path().parent().unwrap();
     let target_dir = manifest_dir.join("target").join("dev");
 
-    let world_address = deploy_world(&runner, &manifest_dir.into(), &target_dir).await;
+    let ws = scarb::ops::read_workspace(config.manifest_path(), &config).unwrap();
+    let dojo_metadata =
+        dojo_metadata_from_workspace(&ws).expect("No current package with dojo metadata found.");
+
+    let world_address =
+        deploy_world(&runner, &manifest_dir.into(), &target_dir, dojo_metadata.skip_migration)
+            .await;
 
     let world = WorldContractReader::new(world_address, provider);
     let position = world.model_reader("Position").await.unwrap();
@@ -65,7 +72,7 @@ async fn test_model() {
 
     assert_eq!(
         position.class_hash(),
-        felt!("0x03c3632f38ab3ba550bd3c596e2af55002d43bc76b7b660a3a57b49795307c58")
+        felt!("0x027942375b09862291ece780c573e8c625df4ba41fd7524e0658ca75fff014ff")
     );
 
     let moves = world.model_reader("Moves").await.unwrap();

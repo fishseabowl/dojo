@@ -2,17 +2,17 @@ use std::str;
 
 use cainome::cairo_serde::ContractAddress;
 use camino::Utf8Path;
-use dojo_lang::compiler::{BASE_DIR, MANIFESTS_DIR, OVERLAYS_DIR};
 use dojo_test_utils::migration::prepare_migration_with_world_and_seed;
 use dojo_world::contracts::{WorldContract, WorldContractReader};
 use dojo_world::manifest::{
-    BaseManifest, DeploymentManifest, OverlayManifest, WORLD_CONTRACT_NAME,
+    BaseManifest, DeploymentManifest, OverlayManifest, BASE_DIR, MANIFESTS_DIR, OVERLAYS_DIR,
+    WORLD_CONTRACT_NAME,
 };
 use dojo_world::metadata::{
     dojo_metadata_from_workspace, ArtifactMetadata, DojoMetadata, Uri, WorldMetadata,
     IPFS_CLIENT_URL, IPFS_PASSWORD, IPFS_USERNAME,
 };
-use dojo_world::migration::strategy::prepare_for_migration;
+use dojo_world::migration::strategy::{prepare_for_migration, MigrationMetadata};
 use dojo_world::migration::world::WorldDiff;
 use dojo_world::migration::TxnConfig;
 use futures::TryStreamExt;
@@ -92,6 +92,113 @@ async fn migrate_with_small_fee_multiplier_will_fail() {
 }
 
 #[tokio::test]
+async fn metadata_calculated_properly() {
+    let config = setup::load_config();
+    let ws = setup::setup_ws(&config);
+
+    let base = config.manifest_path().parent().unwrap();
+    let target_dir = format!("{}/target/dev", base);
+
+    let profile_name = ws.current_profile().unwrap().to_string();
+
+    let mut manifest = BaseManifest::load_from_path(
+        &base.to_path_buf().join(MANIFESTS_DIR).join(profile_name).join(BASE_DIR),
+    )
+    .unwrap();
+
+    let overlay_manifest =
+        OverlayManifest::load_from_path(&base.join(MANIFESTS_DIR).join("dev").join(OVERLAYS_DIR))
+            .unwrap();
+
+    manifest.merge(overlay_manifest);
+
+    let world = WorldDiff::compute(manifest, None);
+
+    let migration = prepare_for_migration(
+        None,
+        felt!("0x12345"),
+        &Utf8Path::new(&target_dir).to_path_buf(),
+        world,
+    )
+    .unwrap();
+
+    // verifies that key name and actual item name are same
+    for (key, value) in migration.metadata.iter() {
+        match value {
+            MigrationMetadata::Contract(c) => {
+                assert_eq!(key, &c.name);
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn migration_with_correct_calldata_second_time_work_as_expected() {
+    let config = setup::load_config();
+    let ws = setup::setup_ws(&config);
+
+    let base = config.manifest_path().parent().unwrap();
+    let target_dir = format!("{}/target/dev", base);
+
+    let sequencer = KatanaRunner::new().expect("Failed to start runner.");
+
+    let account = sequencer.account(0);
+
+    let profile_name = ws.current_profile().unwrap().to_string();
+
+    let mut manifest = BaseManifest::load_from_path(
+        &base.to_path_buf().join(MANIFESTS_DIR).join(&profile_name).join(BASE_DIR),
+    )
+    .unwrap();
+
+    let world = WorldDiff::compute(manifest.clone(), None);
+
+    let migration = prepare_for_migration(
+        None,
+        felt!("0x12345"),
+        &Utf8Path::new(&target_dir).to_path_buf(),
+        world,
+    )
+    .unwrap();
+
+    let migration_output =
+        execute_strategy(&ws, &migration, &account, TxnConfig::init_wait()).await.unwrap();
+
+    // first time others will fail due to calldata error
+    assert!(!migration_output.full);
+
+    let world_address = migration_output.world_address;
+
+    let remote_manifest = DeploymentManifest::load_from_remote(sequencer.provider(), world_address)
+        .await
+        .expect("Failed to load remote manifest");
+
+    let overlay = OverlayManifest::load_from_path(
+        &base.join(MANIFESTS_DIR).join(&profile_name).join(OVERLAYS_DIR),
+    )
+    .expect("Failed to load overlay");
+
+    // adding correct calldata
+    manifest.merge(overlay);
+
+    let mut world = WorldDiff::compute(manifest, Some(remote_manifest));
+    world.update_order().expect("Failed to update order");
+
+    let mut migration = prepare_for_migration(
+        Some(world_address),
+        felt!("0x12345"),
+        &Utf8Path::new(&target_dir).to_path_buf(),
+        world,
+    )
+    .unwrap();
+    migration.resolve_variable(migration.world_address().unwrap()).expect("Failed to resolve");
+
+    let migration_output =
+        execute_strategy(&ws, &migration, &account, TxnConfig::init_wait()).await.unwrap();
+    assert!(migration_output.full);
+}
+
+#[tokio::test]
 async fn migration_from_remote() {
     let config = setup::load_config();
     let ws = setup::setup_ws(&config);
@@ -164,7 +271,8 @@ async fn migrate_with_metadata() {
         .unwrap_or_else(|_| panic!("Unable to initialize the IPFS Client"))
         .with_credentials(IPFS_USERNAME, IPFS_PASSWORD);
 
-    let dojo_metadata = dojo_metadata_from_workspace(&ws);
+    let dojo_metadata =
+        dojo_metadata_from_workspace(&ws).expect("No current package with dojo metadata found.");
 
     // check world metadata
     let resource = world_reader.metadata(&FieldElement::ZERO).call().await.unwrap();
@@ -217,7 +325,8 @@ async fn migrate_with_auto_authorize() {
     let config = setup::load_config();
     let ws = setup::setup_ws(&config);
 
-    let migration = setup::setup_migration(&config).unwrap();
+    let mut migration = setup::setup_migration(&config).unwrap();
+    migration.resolve_variable(migration.world_address().unwrap()).unwrap();
 
     let manifest_base = config.manifest_path().parent().unwrap();
     let mut manifest =
@@ -483,19 +592,19 @@ async fn check_artifact_metadata<P: starknet::providers::Provider + Sync>(
 ) {
     let resource = world_reader.metadata(&resource_id).call().await.unwrap();
 
-    let expected_artifact = dojo_metadata.artifacts.get(element_name);
+    let expected_resource = dojo_metadata.resources_artifacts.get(element_name);
     assert!(
-        expected_artifact.is_some(),
+        expected_resource.is_some(),
         "Unable to find local artifact metadata for {}",
         element_name
     );
-    let expected_artifact = expected_artifact.unwrap();
+    let expected_resource = expected_resource.unwrap();
 
     check_ipfs_metadata(
         client,
         element_name,
         &resource.metadata_uri.to_string().unwrap(),
-        expected_artifact,
+        &expected_resource.artifacts,
     )
     .await;
 }

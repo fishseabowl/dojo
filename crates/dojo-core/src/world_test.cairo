@@ -16,9 +16,11 @@ use dojo::world::{
 use dojo::database::introspect::{Introspect, Layout, FieldLayout};
 use dojo::database::MAX_ARRAY_LENGTH;
 use dojo::test_utils::{spawn_test_world, deploy_with_world_address, assert_array};
-use dojo::benchmarks::{Character, end};
-use dojo::config::component::Config::{ProgramHashUpdate, FactsRegistryUpdate};
+use dojo::config::component::Config::{
+    DifferProgramHashUpdate, MergerProgramHashUpdate, FactsRegistryUpdate
+};
 use dojo::model::Model;
+use dojo::benchmarks::{Character, GasCounterImpl};
 
 #[derive(Introspect, Copy, Drop, Serde)]
 enum OneEnum {
@@ -688,15 +690,14 @@ fn bench_execute() {
     let alice = starknet::contract_address_const::<0x1337>();
     starknet::testing::set_contract_address(alice);
 
-    let gas = testing::get_available_gas();
-    gas::withdraw_gas().unwrap();
-    bar_contract.set_foo(1337, 1337);
-    end(gas, 'foo set call');
+    let gas = GasCounterImpl::start();
 
-    let gas = testing::get_available_gas();
-    gas::withdraw_gas().unwrap();
+    bar_contract.set_foo(1337, 1337);
+    gas.end("foo set call");
+
+    let gas = GasCounterImpl::start();
     let data = get!(world, alice, Foo);
-    end(gas, 'foo get macro');
+    gas.end("foo get macro");
 
     assert(data.a == 1337, 'data not stored');
 }
@@ -711,15 +712,15 @@ fn bench_execute_complex() {
     let alice = starknet::contract_address_const::<0x1337>();
     starknet::testing::set_contract_address(alice);
 
-    let gas = testing::get_available_gas();
-    gas::withdraw_gas().unwrap();
-    bar_contract.set_char(1337, 1337);
-    end(gas, 'char set call');
+    let gas = GasCounterImpl::start();
 
-    let gas = testing::get_available_gas();
-    gas::withdraw_gas().unwrap();
+    bar_contract.set_char(1337, 1337);
+    gas.end("char set call");
+
+    let gas = GasCounterImpl::start();
+
     let data = get!(world, alice, Character);
-    end(gas, 'char get macro');
+    gas.end("char get macro");
 
     assert(data.heigth == 1337, 'data not stored');
 }
@@ -807,18 +808,19 @@ fn drop_all_events(address: ContractAddress) {
 
 #[test]
 #[available_gas(6000000)]
-fn test_program_hash_event_emit() {
+fn test_differ_program_hash_event_emit() {
     let world = deploy_world();
     drop_all_events(world.contract_address);
     let config = IConfigDispatcher { contract_address: world.contract_address };
 
-    config.set_program_hash(program_hash: 98758347158781475198374598718743);
+    config.set_differ_program_hash(program_hash: 98758347158781475198374598718743);
 
     assert_eq!(
         starknet::testing::pop_log(world.contract_address),
-        Option::Some(ProgramHashUpdate { program_hash: 98758347158781475198374598718743 })
+        Option::Some(DifferProgramHashUpdate { program_hash: 98758347158781475198374598718743 })
     );
 }
+
 #[test]
 #[available_gas(6000000)]
 fn test_facts_registry_event_emit() {
@@ -833,6 +835,29 @@ fn test_facts_registry_event_emit() {
         Option::Some(FactsRegistryUpdate { address: contract_address_const::<0x12>() })
     );
 }
+
+#[starknet::interface]
+trait IDojoInit<ContractState> {
+    fn dojo_init(self: @ContractState) -> felt252;
+}
+
+#[dojo::contract]
+mod test_contract {}
+
+#[test]
+#[available_gas(6000000)]
+#[should_panic(expected: ('Only world can init', 'ENTRYPOINT_FAILED'))]
+fn test_can_call_init() {
+    let world = deploy_world();
+    let address = world
+        .deploy_contract(
+            'salt1', test_contract::TEST_CLASS_HASH.try_into().unwrap(), array![].span()
+        );
+
+    let dojo_init = IDojoInitDispatcher { contract_address: address };
+    dojo_init.dojo_init();
+}
+
 #[test]
 fn test_set_entity_with_fixed_layout() {
     let world = deploy_world();

@@ -16,6 +16,7 @@ cairo-lang-plugins.workspace = true
 cairo-lang-project.workspace = true
 cairo-lang-sierra-to-casm.workspace = true
 cairo-lang-sierra.workspace = true
+cairo-lang-starknet-classes.workspace = true
 cairo-lang-starknet.workspace = true
 cairo-lang-test-plugin.workspace = true
 cairo-lang-test-runner.workspace = true
@@ -49,6 +50,7 @@ tokio.workspace = true
 tracing-log = "0.1.3"
 tracing.workspace = true
 url.workspace = true
+toml.workspace = true
 
 [dev-dependencies]
 assert_fs.workspace = true

@@ -211,6 +211,10 @@ abigen!(
           {
             "name": "class_hash",
             "type": "core::starknet::class_hash::ClassHash"
+          },
+          {
+            "name": "init_calldata",
+            "type": "core::array::Span::<core::felt252>"
           }
         ],
         "outputs": [
@@ -557,6 +561,10 @@ abigen!(
           {
             "name": "program_output",
             "type": "dojo::interfaces::ProgramOutput"
+          },
+          {
+            "name": "program_hash",
+            "type": "core::felt252"
           }
         ],
         "outputs": [],
@@ -575,7 +583,7 @@ abigen!(
     "items": [
       {
         "type": "function",
-        "name": "set_program_hash",
+        "name": "set_differ_program_hash",
         "inputs": [
           {
             "name": "program_hash",
@@ -587,7 +595,30 @@ abigen!(
       },
       {
         "type": "function",
-        "name": "get_program_hash",
+        "name": "set_merger_program_hash",
+        "inputs": [
+          {
+            "name": "program_hash",
+            "type": "core::felt252"
+          }
+        ],
+        "outputs": [],
+        "state_mutability": "external"
+      },
+      {
+        "type": "function",
+        "name": "get_differ_program_hash",
+        "inputs": [],
+        "outputs": [
+          {
+            "type": "core::felt252"
+          }
+        ],
+        "state_mutability": "view"
+      },
+      {
+        "type": "function",
+        "name": "get_merger_program_hash",
         "inputs": [],
         "outputs": [
           {
@@ -833,7 +864,19 @@ abigen!(
   },
   {
     "type": "event",
-    "name": "dojo::config::component::Config::ProgramHashUpdate",
+    "name": "dojo::config::component::Config::DifferProgramHashUpdate",
+    "kind": "struct",
+    "members": [
+      {
+        "name": "program_hash",
+        "type": "core::felt252",
+        "kind": "data"
+      }
+    ]
+  },
+  {
+    "type": "event",
+    "name": "dojo::config::component::Config::MergerProgramHashUpdate",
     "kind": "struct",
     "members": [
       {
@@ -861,8 +904,13 @@ abigen!(
     "kind": "enum",
     "variants": [
       {
-        "name": "ProgramHashUpdate",
-        "type": "dojo::config::component::Config::ProgramHashUpdate",
+        "name": "DifferProgramHashUpdate",
+        "type": "dojo::config::component::Config::DifferProgramHashUpdate",
+        "kind": "nested"
+      },
+      {
+        "name": "MergerProgramHashUpdate",
+        "type": "dojo::config::component::Config::MergerProgramHashUpdate",
         "kind": "nested"
       },
       {

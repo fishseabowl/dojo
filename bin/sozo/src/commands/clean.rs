@@ -3,7 +3,7 @@ use std::fs;
 use anyhow::Result;
 use camino::Utf8PathBuf;
 use clap::Args;
-use dojo_lang::compiler::{ABIS_DIR, BASE_DIR, MANIFESTS_DIR};
+use dojo_world::manifest::{ABIS_DIR, BASE_DIR, MANIFESTS_DIR};
 use scarb::core::Config;
 use tracing::trace;
 
@@ -21,7 +21,7 @@ impl CleanArgs {
     /// # Arguments
     ///
     /// * `profile_dir` - The directory where the profile files are located.
-    pub fn clean_manifests(&self, profile_dir: &Utf8PathBuf) -> Result<()> {
+    pub fn clean_manifests(profile_dir: &Utf8PathBuf) -> Result<()> {
         trace!(?profile_dir, "Cleaning manifests.");
         let dirs = vec![profile_dir.join(BASE_DIR), profile_dir.join(ABIS_DIR).join(BASE_DIR)];
 
@@ -51,7 +51,7 @@ impl CleanArgs {
         // By default, this command cleans the build manifests and scarb artifacts.
         trace!("Cleaning Scarb artifacts and build manifests.");
         scarb::ops::clean(config)?;
-        self.clean_manifests(&profile_dir)?;
+        Self::clean_manifests(&profile_dir)?;
 
         if self.all && profile_dir.exists() {
             trace!(?profile_dir, "Removing entire profile directory.");
@@ -65,6 +65,7 @@ impl CleanArgs {
 #[cfg(test)]
 mod tests {
     use dojo_test_utils::compiler;
+    use dojo_world::metadata::dojo_metadata_from_workspace;
     use dojo_world::migration::TxnConfig;
     use katana_runner::KatanaRunner;
     use sozo_ops::migration;
@@ -84,6 +85,10 @@ mod tests {
 
         let ws = scarb::ops::read_workspace(config.manifest_path(), &config).unwrap();
 
+        let dojo_metadata = dojo_metadata_from_workspace(&ws).expect(
+            "No current package with dojo metadata found, clean is not yet support for workspaces.",
+        );
+
         // Plan the migration to generate some manifests other than base.
         config.tokio_handle().block_on(async {
             migration::migrate(
@@ -94,6 +99,7 @@ mod tests {
                 "dojo_examples",
                 true,
                 TxnConfig::default(),
+                dojo_metadata.skip_migration,
             )
             .await
             .unwrap()

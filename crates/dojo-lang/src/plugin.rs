@@ -126,8 +126,6 @@ impl BuiltinDojoPlugin {
     ) -> PluginResult {
         PluginResult {
             code: None,
-            // All diagnostics are for now error. Severity may be moved as argument
-            // if warnings are required in this file.
             diagnostics: vec![PluginDiagnostic { stable_ptr, message, severity: Severity::Error }],
             remove_original_item: false,
         }
@@ -514,9 +512,9 @@ impl MacroPlugin for BuiltinDojoPlugin {
             DOJO_INTERFACE_ATTR.to_string(),
             DOJO_CONTRACT_ATTR.to_string(),
             DOJO_EVENT_ATTR.to_string(),
+            DOJO_MODEL_ATTR.to_string(),
             "key".to_string(),
             "computed".to_string(),
-            DOJO_MODEL_ATTR.to_string(),
         ]
     }
 }

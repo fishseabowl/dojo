@@ -130,8 +130,8 @@ impl Sql {
             vec![model.name()],
             &mut model_idx,
             block_timestamp,
-            false,
-            false,
+            &mut 0,
+            &mut 0,
         );
         self.query_queue.execute_all().await?;
 
@@ -186,7 +186,7 @@ impl Sql {
             (&entity_id, false),
             &entity,
             block_timestamp,
-            None,
+            &vec![],
         );
         self.query_queue.execute_all().await?;
 
@@ -241,7 +241,7 @@ impl Sql {
             (&entity_id, true),
             &entity,
             block_timestamp,
-            None,
+            &vec![],
         );
         self.query_queue.execute_all().await?;
 
@@ -413,8 +413,8 @@ impl Sql {
         path: Vec<String>,
         model_idx: &mut i64,
         block_timestamp: u64,
-        is_array: bool,
-        is_parent_array: bool,
+        array_idx: &mut usize,
+        parent_array_idx: &mut usize,
     ) {
         if let Ty::Enum(e) = model {
             if e.options.iter().all(|o| if let Ty::Tuple(t) = &o.ty { t.is_empty() } else { false })
@@ -428,8 +428,8 @@ impl Sql {
             model,
             *model_idx,
             block_timestamp,
-            is_array,
-            is_parent_array,
+            *array_idx,
+            *parent_array_idx,
         );
 
         let mut build_member = |pathname: &str, member: &Ty| {
@@ -447,9 +447,8 @@ impl Sql {
                 path_clone,
                 &mut (*model_idx + 1),
                 block_timestamp,
-                // If the parent is an array, all children are also represented as table arrays
-                if let Ty::Array(_) = member { true } else { is_array },
-                if let Ty::Array(_) = model { true } else { is_parent_array },
+                &mut (*array_idx + if let Ty::Array(_) = member { 1 } else { 0 }),
+                &mut (*parent_array_idx + if let Ty::Array(_) = model { 1 } else { 0 }),
             );
         };
 
@@ -486,12 +485,12 @@ impl Sql {
         entity_id: (&str, bool),
         entity: &Ty,
         block_timestamp: u64,
-        index: Option<i64>,
+        indexes: &Vec<i64>,
     ) {
         let (entity_id, is_event_message) = entity_id;
 
         let update_members =
-            |members: &[Member], query_queue: &mut QueryQueue, index: Option<i64>| {
+            |members: &[Member], query_queue: &mut QueryQueue, indexes: &Vec<i64>| {
                 let table_id = path.join("$");
                 let mut columns = vec![
                     "id".to_string(),
@@ -517,9 +516,19 @@ impl Sql {
                     Argument::String(entity_id.to_string()),
                 ];
 
-                if let Some(idx) = index {
-                    columns.push("idx".to_string());
-                    arguments.push(Argument::Int(idx));
+                if !indexes.is_empty() {
+                    columns.push("full_array_id".to_string());
+                    arguments.push(Argument::String(
+                        std::iter::once(entity_id.to_string())
+                            .chain(indexes.iter().map(|i| i.to_string()))
+                            .collect::<Vec<String>>()
+                            .join(FELT_DELIMITER),
+                    ));
+                }
+
+                for (column_idx, idx) in indexes.iter().enumerate() {
+                    columns.push(format!("idx_{}", column_idx));
+                    arguments.push(Argument::Int(*idx));
                 }
 
                 for member in members.iter() {
@@ -552,7 +561,7 @@ impl Sql {
 
         match entity {
             Ty::Struct(s) => {
-                update_members(&s.children, &mut self.query_queue, index);
+                update_members(&s.children, &mut self.query_queue, indexes);
 
                 for member in s.children.iter() {
                     let mut path_clone = path.clone();
@@ -563,7 +572,7 @@ impl Sql {
                         (entity_id, is_event_message),
                         &member.ty,
                         block_timestamp,
-                        index,
+                        indexes,
                     );
                 }
             }
@@ -584,7 +593,7 @@ impl Sql {
                         Member { name: option.name.clone(), ty: option.ty.clone(), key: false },
                     ],
                     &mut self.query_queue,
-                    index,
+                    indexes,
                 );
 
                 match &option.ty {
@@ -599,7 +608,7 @@ impl Sql {
                             (entity_id, is_event_message),
                             &option.ty,
                             block_timestamp,
-                            index,
+                            indexes,
                         );
                     }
                 }
@@ -616,7 +625,7 @@ impl Sql {
                         .collect::<Vec<Member>>()
                         .as_slice(),
                     &mut self.query_queue,
-                    index,
+                    indexes,
                 );
 
                 for (idx, member) in t.iter().enumerate() {
@@ -628,25 +637,34 @@ impl Sql {
                         (entity_id, is_event_message),
                         member,
                         block_timestamp,
-                        index,
+                        indexes,
                     );
                 }
             }
             Ty::Array(array) => {
-                // delete all previous array elements
-                self.query_queue.enqueue(
-                    format!(
-                        "DELETE FROM [{table_id}] WHERE entity_id = ?",
-                        table_id = path.join("$")
-                    ),
-                    vec![Argument::String(entity_id.to_string())],
-                );
+                // delete all previous array elements with the array indexes
+                let table_id = path.join("$");
+                let mut query =
+                    format!("DELETE FROM [{table_id}] WHERE entity_id = ? ", table_id = table_id);
+                for idx in 0..indexes.len() {
+                    query.push_str(&format!("AND idx_{} = ? ", idx));
+                }
 
+                // flatten indexes with entity id
+                let mut arguments = vec![Argument::String(entity_id.to_string())];
+                arguments.extend(indexes.iter().map(|idx| Argument::Int(*idx)));
+
+                self.query_queue.enqueue(query, arguments);
+
+                // insert the new array elements
                 for (idx, member) in array.iter().enumerate() {
+                    let mut indexes = indexes.clone();
+                    indexes.push(idx as i64);
+
                     update_members(
                         &[Member { name: "data".to_string(), ty: member.clone(), key: false }],
                         &mut self.query_queue,
-                        Some(idx as i64),
+                        &indexes,
                     );
 
                     let mut path_clone = path.clone();
@@ -657,7 +675,7 @@ impl Sql {
                         (entity_id, is_event_message),
                         member,
                         block_timestamp,
-                        Some(idx as i64),
+                        &indexes,
                     );
                 }
             }
@@ -678,20 +696,58 @@ impl Sql {
                 self.query_queue
                     .push_front(statement, vec![Argument::String(entity_id.to_string())]);
                 for member in s.children.iter() {
-                    if let Ty::Struct(_) = &member.ty {
-                        let mut path_clone = path.clone();
-                        path_clone.push(member.name.clone());
-                        self.build_delete_entity_queries_recursive(
-                            path_clone, entity_id, &member.ty,
-                        );
-                    }
+                    let mut path_clone = path.clone();
+                    path_clone.push(member.name.clone());
+                    self.build_delete_entity_queries_recursive(path_clone, entity_id, &member.ty);
                 }
             }
             Ty::Enum(e) => {
+                if e.options
+                    .iter()
+                    .all(|o| if let Ty::Tuple(t) = &o.ty { t.is_empty() } else { false })
+                {
+                    return;
+                }
+
+                let table_id = path.join("$");
+                let statement = format!("DELETE FROM [{table_id}] WHERE entity_id = ?");
+                self.query_queue
+                    .push_front(statement, vec![Argument::String(entity_id.to_string())]);
+
                 for child in e.options.iter() {
+                    if let Ty::Tuple(t) = &child.ty {
+                        if t.is_empty() {
+                            continue;
+                        }
+                    }
+
                     let mut path_clone = path.clone();
                     path_clone.push(child.name.clone());
                     self.build_delete_entity_queries_recursive(path_clone, entity_id, &child.ty);
+                }
+            }
+            Ty::Array(array) => {
+                let table_id = path.join("$");
+                let statement = format!("DELETE FROM [{table_id}] WHERE entity_id = ?");
+                self.query_queue
+                    .push_front(statement, vec![Argument::String(entity_id.to_string())]);
+
+                for member in array.iter() {
+                    let mut path_clone = path.clone();
+                    path_clone.push("data".to_string());
+                    self.build_delete_entity_queries_recursive(path_clone, entity_id, member);
+                }
+            }
+            Ty::Tuple(t) => {
+                let table_id = path.join("$");
+                let statement = format!("DELETE FROM [{table_id}] WHERE entity_id = ?");
+                self.query_queue
+                    .push_front(statement, vec![Argument::String(entity_id.to_string())]);
+
+                for (idx, member) in t.iter().enumerate() {
+                    let mut path_clone = path.clone();
+                    path_clone.push(format!("_{}", idx));
+                    self.build_delete_entity_queries_recursive(path_clone, entity_id, member);
                 }
             }
             _ => {}
@@ -704,8 +760,8 @@ impl Sql {
         model: &Ty,
         model_idx: i64,
         block_timestamp: u64,
-        is_array: bool,
-        is_parent_array: bool,
+        array_idx: usize,
+        parent_array_idx: usize,
     ) {
         let table_id = path.join("$");
         let mut indices = Vec::new();
@@ -715,8 +771,14 @@ impl Sql {
              entity_id TEXT, event_message_id TEXT, "
         );
 
-        if is_array {
-            create_table_query.push_str("idx INTEGER NOT NULL, ");
+        if array_idx > 0 {
+            // index columns
+            for i in 0..array_idx {
+                create_table_query.push_str(&format!("idx_{i} INTEGER NOT NULL, ", i = i));
+            }
+
+            // full array id column
+            create_table_query.push_str("full_array_id TEXT NOT NULL UNIQUE, ");
         }
 
         let mut build_member = |name: &str, ty: &Ty, options: &mut Option<Argument>| {
@@ -736,8 +798,11 @@ impl Sql {
                     .join(", ");
 
                 create_table_query.push_str(&format!(
-                    "external_{name} TEXT CHECK(external_{name} IN ({all_options})) NOT NULL, ",
+                    "external_{name} TEXT CHECK(external_{name} IN ({all_options})) ",
                 ));
+
+                // if we're an array, we could have multiple enum options
+                create_table_query.push_str(if array_idx > 0 { ", " } else { "NOT NULL, " });
 
                 indices.push(format!(
                     "CREATE INDEX IF NOT EXISTS idx_{table_id}_{name} ON [{table_id}] \
@@ -907,24 +972,26 @@ impl Sql {
         if path.len() > 1 {
             let parent_table_id = path[..path.len() - 1].join("$");
 
-            if is_parent_array && path.len() > 2 {
-                create_table_query.push_str(&format!(
-                    "FOREIGN KEY (id, idx) REFERENCES {parent_table_id} (id, idx) ON DELETE \
-                     CASCADE, "
-                ));
-            } else {
-                create_table_query.push_str(&format!(
-                    "FOREIGN KEY (id) REFERENCES {parent_table_id} (id), ",
-                    parent_table_id = parent_table_id
-                ));
+            create_table_query.push_str("FOREIGN KEY (id");
+            for i in 0..parent_array_idx {
+                create_table_query.push_str(&format!(", idx_{i}", i = i));
             }
+            create_table_query.push_str(&format!(
+                ") REFERENCES [{parent_table_id}] (id",
+                parent_table_id = parent_table_id
+            ));
+            for i in 0..parent_array_idx {
+                create_table_query.push_str(&format!(", idx_{i}", i = i));
+            }
+            create_table_query.push_str(") ON DELETE CASCADE, ");
         };
 
-        if is_array {
-            create_table_query.push_str("PRIMARY KEY (id, idx), ");
-        } else {
-            create_table_query.push_str("PRIMARY KEY (id), ");
+        create_table_query.push_str("PRIMARY KEY (id");
+        for i in 0..array_idx {
+            create_table_query.push_str(&format!(", idx_{i}", i = i));
         }
+        create_table_query.push_str("), ");
+
         create_table_query.push_str("FOREIGN KEY (entity_id) REFERENCES entities(id), ");
         // create_table_query.push_str("FOREIGN KEY (event_id) REFERENCES events(id), ");
         create_table_query

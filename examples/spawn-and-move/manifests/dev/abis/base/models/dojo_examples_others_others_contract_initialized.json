@@ -319,52 +319,30 @@
   },
   {
     "type": "impl",
-    "name": "emote_messageImpl",
-    "interface_name": "dojo_examples::models::Iemote_message"
-  },
-  {
-    "type": "enum",
-    "name": "dojo_examples::models::Emote",
-    "variants": [
-      {
-        "name": "None",
-        "type": "()"
-      },
-      {
-        "name": "Happy",
-        "type": "()"
-      },
-      {
-        "name": "Sad",
-        "type": "()"
-      },
-      {
-        "name": "Angry",
-        "type": "()"
-      },
-      {
-        "name": "Love",
-        "type": "()"
-      }
-    ]
+    "name": "contract_initializedImpl",
+    "interface_name": "dojo_examples::others::others::Icontract_initialized"
   },
   {
     "type": "struct",
-    "name": "dojo_examples::models::EmoteMessage",
+    "name": "dojo_examples::others::others::ContractInitialized",
     "members": [
       {
-        "name": "identity",
+        "name": "contract_address",
         "type": "core::starknet::contract_address::ContractAddress"
       },
       {
-        "name": "emote",
-        "type": "dojo_examples::models::Emote"
+        "name": "contract_class",
+        "type": "core::starknet::class_hash::ClassHash"
+      },
+      {
+        "name": "value",
+        "type": "core::integer::u8"
       }
     ]
   },
   {
     "type": "interface",
-    "name": "dojo_examples::models::Iemote_message",
+    "name": "dojo_examples::others::others::Icontract_initialized",
     "items": [
       {
         "type": "function",
@@ -372,7 +350,7 @@
         "inputs": [
           {
             "name": "model",
-            "type": "dojo_examples::models::EmoteMessage"
+            "type": "dojo_examples::others::others::ContractInitialized"
           }
         ],
         "outputs": [],
@@ -382,7 +360,7 @@
   },
   {
     "type": "event",
-    "name": "dojo_examples::models::emote_message::Event",
+    "name": "dojo_examples::others::others::contract_initialized::Event",
     "kind": "enum",
     "variants": []
   }

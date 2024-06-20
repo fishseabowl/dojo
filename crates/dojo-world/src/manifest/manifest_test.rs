@@ -2,20 +2,27 @@ use std::io::Write;
 
 use cainome::cairo_serde::{ByteArray, CairoSerde};
 use camino::Utf8PathBuf;
-use dojo_lang::compiler::{BASE_DIR, MANIFESTS_DIR};
 use dojo_test_utils::compiler;
 use dojo_test_utils::rpc::MockJsonRpcTransport;
 use katana_runner::KatanaRunner;
 use serde_json::json;
+use smol_str::SmolStr;
 use starknet::accounts::ConnectedAccount;
 use starknet::core::types::contract::AbiEntry;
 use starknet::core::types::{EmittedEvent, FieldElement};
 use starknet::macros::{felt, selector};
 use starknet::providers::jsonrpc::{JsonRpcClient, JsonRpcMethod};
 
-use super::{parse_contracts_events, AbiFormat, BaseManifest, DojoContract, DojoModel};
+use super::{
+    parse_contracts_events, AbiFormat, BaseManifest, DojoContract, DojoModel, OverlayDojoContract,
+    OverlayManifest,
+};
 use crate::contracts::world::test::deploy_world;
-use crate::manifest::{parse_models_events, AbstractManifestError, DeploymentManifest, Manifest};
+use crate::manifest::{
+    parse_models_events, AbstractManifestError, DeploymentManifest, Manifest, OverlayClass,
+    OverlayDojoModel, BASE_DIR, MANIFESTS_DIR, OVERLAYS_DIR,
+};
+use crate::metadata::dojo_metadata_from_workspace;
 use crate::migration::world::WorldDiff;
 
 #[tokio::test]
@@ -376,26 +383,47 @@ fn fetch_remote_manifest() {
     let (temp_project_dir, config, _) =
         compiler::copy_build_project_temp(source_project, dojo_core_path, true);
 
+    let ws = scarb::ops::read_workspace(config.manifest_path(), &config).unwrap();
+    let dojo_metadata =
+        dojo_metadata_from_workspace(&ws).expect("No current package with dojo metadata found.");
+
     let artifacts_path = temp_project_dir.join(format!("target/{profile_name}"));
 
-    let world_address = config
-        .tokio_handle()
-        .block_on(async { deploy_world(&runner, &temp_project_dir, &artifacts_path).await });
+    let world_address = config.tokio_handle().block_on(async {
+        deploy_world(
+            &runner,
+            &temp_project_dir,
+            &artifacts_path,
+            dojo_metadata.skip_migration.clone(),
+        )
+        .await
+    });
 
-    let local_manifest = BaseManifest::load_from_path(
+    let mut local_manifest = BaseManifest::load_from_path(
         &temp_project_dir.join(MANIFESTS_DIR).join(profile_name).join(BASE_DIR),
     )
     .unwrap();
+
+    if let Some(skip_manifests) = dojo_metadata.skip_migration {
+        local_manifest.remove_items(skip_manifests);
+    }
+
+    let overlay_manifest = OverlayManifest::load_from_path(
+        &temp_project_dir.join(MANIFESTS_DIR).join(profile_name).join(OVERLAYS_DIR),
+    )
+    .unwrap();
+
+    local_manifest.merge(overlay_manifest);
 
     let remote_manifest = config.tokio_handle().block_on(async {
         DeploymentManifest::load_from_remote(provider, world_address).await.unwrap()
     });
 
-    assert_eq!(local_manifest.models.len(), 5);
-    assert_eq!(local_manifest.contracts.len(), 1);
+    assert_eq!(local_manifest.models.len(), 7);
+    assert_eq!(local_manifest.contracts.len(), 3);
 
-    assert_eq!(remote_manifest.models.len(), 5);
-    assert_eq!(remote_manifest.contracts.len(), 1);
+    assert_eq!(remote_manifest.models.len(), 7);
+    assert_eq!(remote_manifest.contracts.len(), 3);
 
     // compute diff from local and remote manifest
 
@@ -463,4 +491,203 @@ fn test_abi_format_load_abi_string() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(embedded.load_abi_string(&Utf8PathBuf::new()).unwrap(), "[]");
 
     Ok(())
+}
+
+#[test]
+fn overlay_merge_for_contract_and_model_work_as_expected() {
+    let other = OverlayManifest {
+        contracts: vec![
+            OverlayDojoContract { name: "othercontract1".into(), ..Default::default() },
+            OverlayDojoContract { name: "othercontract2".into(), ..Default::default() },
+            OverlayDojoContract { name: "existingcontract".into(), ..Default::default() },
+        ],
+        models: vec![
+            OverlayDojoModel { name: "othermodel1".into(), ..Default::default() },
+            OverlayDojoModel { name: "othermodel2".into(), ..Default::default() },
+            OverlayDojoModel { name: "existingmodel".into(), ..Default::default() },
+        ],
+        ..Default::default()
+    };
+
+    let mut current = OverlayManifest {
+        contracts: vec![
+            OverlayDojoContract { name: "currentcontract1".into(), ..Default::default() },
+            OverlayDojoContract { name: "currentcontract2".into(), ..Default::default() },
+            OverlayDojoContract { name: "existingcontract".into(), ..Default::default() },
+        ],
+        models: vec![
+            OverlayDojoModel { name: "currentmodel1".into(), ..Default::default() },
+            OverlayDojoModel { name: "currentmodel2".into(), ..Default::default() },
+            OverlayDojoModel { name: "existingmodel".into(), ..Default::default() },
+        ],
+        ..Default::default()
+    };
+
+    let expected = OverlayManifest {
+        contracts: vec![
+            OverlayDojoContract { name: "currentcontract1".into(), ..Default::default() },
+            OverlayDojoContract { name: "currentcontract2".into(), ..Default::default() },
+            OverlayDojoContract { name: "existingcontract".into(), ..Default::default() },
+            OverlayDojoContract { name: "othercontract1".into(), ..Default::default() },
+            OverlayDojoContract { name: "othercontract2".into(), ..Default::default() },
+        ],
+        models: vec![
+            OverlayDojoModel { name: "currentmodel1".into(), ..Default::default() },
+            OverlayDojoModel { name: "currentmodel2".into(), ..Default::default() },
+            OverlayDojoModel { name: "existingmodel".into(), ..Default::default() },
+            OverlayDojoModel { name: "othermodel1".into(), ..Default::default() },
+            OverlayDojoModel { name: "othermodel2".into(), ..Default::default() },
+        ],
+        ..Default::default()
+    };
+
+    current.merge(other);
+
+    assert_eq!(current, expected);
+}
+
+#[test]
+fn overlay_merge_for_world_work_as_expected() {
+    // when other.world is none and current.world is some
+    let other = OverlayManifest { ..Default::default() };
+    let mut current = OverlayManifest {
+        world: Some(OverlayClass { name: "world".into(), ..Default::default() }),
+        ..Default::default()
+    };
+    let expected = OverlayManifest {
+        world: Some(OverlayClass { name: "world".into(), ..Default::default() }),
+        ..Default::default()
+    };
+    current.merge(other);
+
+    assert_eq!(current, expected);
+
+    // when other.world is some and current.world is none
+    let other = OverlayManifest {
+        world: Some(OverlayClass { name: "world".into(), ..Default::default() }),
+        ..Default::default()
+    };
+    let mut current = OverlayManifest { ..Default::default() };
+    let expected = OverlayManifest {
+        world: Some(OverlayClass { name: "world".into(), ..Default::default() }),
+        ..Default::default()
+    };
+
+    current.merge(other);
+    assert_eq!(current, expected);
+
+    // when other.world is some and current.world is some
+    let other = OverlayManifest {
+        world: Some(OverlayClass { name: "worldother".into(), ..Default::default() }),
+        ..Default::default()
+    };
+    let mut current = OverlayManifest {
+        world: Some(OverlayClass { name: "worldcurrent".into(), ..Default::default() }),
+        ..Default::default()
+    };
+    let expected = OverlayManifest {
+        world: Some(OverlayClass { name: "worldcurrent".into(), ..Default::default() }),
+        ..Default::default()
+    };
+
+    current.merge(other);
+    assert_eq!(current, expected);
+
+    // when other.world is none and current.world is none
+    let other = OverlayManifest { ..Default::default() };
+    let mut current = OverlayManifest { ..Default::default() };
+    let expected = OverlayManifest { ..Default::default() };
+
+    current.merge(other);
+    assert_eq!(current, expected);
+}
+
+#[test]
+fn overlay_merge_for_base_work_as_expected() {
+    // when other.base is none and current.base is some
+    let other = OverlayManifest { ..Default::default() };
+    let mut current = OverlayManifest {
+        base: Some(OverlayClass { name: "base".into(), ..Default::default() }),
+        ..Default::default()
+    };
+    let expected = OverlayManifest {
+        base: Some(OverlayClass { name: "base".into(), ..Default::default() }),
+        ..Default::default()
+    };
+    current.merge(other);
+
+    assert_eq!(current, expected);
+
+    // when other.base is some and current.base is none
+    let other = OverlayManifest {
+        base: Some(OverlayClass { name: "base".into(), ..Default::default() }),
+        ..Default::default()
+    };
+    let mut current = OverlayManifest { ..Default::default() };
+    let expected = OverlayManifest {
+        base: Some(OverlayClass { name: "base".into(), ..Default::default() }),
+        ..Default::default()
+    };
+
+    current.merge(other);
+    assert_eq!(current, expected);
+
+    // when other.base is some and current.base is some
+    let other = OverlayManifest {
+        base: Some(OverlayClass { name: "baseother".into(), ..Default::default() }),
+        ..Default::default()
+    };
+    let mut current = OverlayManifest {
+        base: Some(OverlayClass { name: "basecurrent".into(), ..Default::default() }),
+        ..Default::default()
+    };
+    let expected = OverlayManifest {
+        base: Some(OverlayClass { name: "basecurrent".into(), ..Default::default() }),
+        ..Default::default()
+    };
+
+    current.merge(other);
+    assert_eq!(current, expected);
+
+    // when other.base is none and current.base is none
+    let other = OverlayManifest { ..Default::default() };
+    let mut current = OverlayManifest { ..Default::default() };
+    let expected = OverlayManifest { ..Default::default() };
+
+    current.merge(other);
+    assert_eq!(current, expected);
+}
+
+#[test]
+fn base_manifest_remove_items_work_as_expected() {
+    let contracts = ["c1", "c2", "c3"];
+    let models = ["m1", "m2", "m3"];
+
+    let world = Manifest { name: "world".into(), inner: Default::default() };
+    let base = Manifest { name: "base".into(), inner: Default::default() };
+
+    let contracts = contracts
+        .iter()
+        .map(|c| Manifest { name: SmolStr::from(*c), inner: Default::default() })
+        .collect();
+    let models = models
+        .iter()
+        .map(|c| Manifest { name: SmolStr::from(*c), inner: Default::default() })
+        .collect();
+
+    let mut base = BaseManifest { contracts, models, world, base };
+
+    base.remove_items(vec!["c1".to_string(), "c3".to_string(), "m2".to_string()]);
+
+    assert_eq!(base.contracts.len(), 1);
+    assert_eq!(
+        base.contracts.iter().map(|c| c.name.clone().into()).collect::<Vec<String>>(),
+        vec!["c2"]
+    );
+
+    assert_eq!(base.models.len(), 2);
+    assert_eq!(
+        base.models.iter().map(|c| c.name.clone().into()).collect::<Vec<String>>(),
+        vec!["m1", "m3"]
+    );
 }
